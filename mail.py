@@ -1,6 +1,8 @@
 #!/usr/bin/python
-# $Id$
-version = 'CVS ' + '$Revision$'.split()[1]
+try:
+    version = 'git ' + open(os.path.join(os.path.dirname(__file__), '.git/refs/heads/master')).read().strip()
+except:
+    version = 'unknown'
 
 import email, os, signal, smtplib, sys, time, traceback, xmpp
 from xmpp.browser import *
