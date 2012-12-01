@@ -8,6 +8,10 @@ import email, os, signal, smtplib, sys, time, traceback, xmpp
 from xmpp.browser import *
 from email.MIMEText import MIMEText
 from email.Header import decode_header
+try:
+    from html2text import html2text
+except ImportError:
+    html2text = lambda s: s  # dummy replacement
 import config, xmlconfig
 
 class Transport:
@@ -163,13 +167,17 @@ class Transport:
             # we are assuming that text/plain will be first
             while msg.is_multipart():
                 msg = msg.get_payload(0)
-                if not msg: continue
+                if not msg:
+                    continue
 
             charset = msg.get_charsets('us-ascii')[0]
             body = msg.get_payload(None,True)
             body = unicode(body, charset, 'replace')
+            if msg.get_content_type() == 'text/html':
+                ## check for `msg.get_content_subtype() == 'html'` instead?
+                body = html2text(body)
 
-            m = Message(to=jto,frm = jfrom, subject = subject, body = body)
+            m = Message(to=jto, frm=jfrom, subject=subject, body=body)
             self.jabber.send(m)
 
     def xmpp_connect(self):
