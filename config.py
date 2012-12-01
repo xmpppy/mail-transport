@@ -26,3 +26,4 @@ smtpServer = "127.0.0.1"
 watchDir = "~/Maildir/new/"
 
 domains = []
+fallbackToJid = ''

@@ -27,6 +27,7 @@ class Transport:
             self.watchdir = self.watchdir.replace('~', os.environ['HOME'])
         # A list of two element lists, 1st is xmpp domain, 2nd is email domain
         self.mappings = [mapping.split('=') for mapping in config.domains]
+        self.jto_fallback = config.fallbackToJid
         email.Charset.add_charset( 'utf-8', email.Charset.SHORTEST, None, None )
 
     def register_handlers(self):
@@ -159,7 +160,13 @@ class Transport:
                 if mapping[1] == tosplit[1]:
                     jto = '%s@%s' % (tosplit [0], mapping[0])
 
-            if not jto: continue
+            if not jto:
+                ## XXX: actual problem is in, e.g., maillists mail, which is
+                ##   sent to the maillist and not to the recipient. This is
+                ##   more like a temporary haxfix for that.
+                jto = self.jto_fallback
+                if not jto:
+                    continue
 
             (subject, charset) = decode_header(msg['Subject'])[0]
             if charset: subject = unicode(subject, charset, 'replace')
