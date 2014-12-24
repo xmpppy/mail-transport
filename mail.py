@@ -206,12 +206,20 @@ class Transport:
             (subject, charset) = decode_header(msg['Subject'])[0]
             if charset: subject = unicode(subject, charset, 'replace')
 
-            # we are assuming that text/plain will be first
+            msg_plain = msg_html = None
             while msg.is_multipart():
                 msg = msg.get_payload(0)
                 if not msg:
                     continue
+                ctype = msg.get_content_type()
+                # NOTE: 'startswith' might be nore correct, but this should
+                # be okay too
+                if 'text/html' in ctype:
+                    msg_html = msg
+                elif 'text/plain' in ctype:
+                    msg_plain = msg
 
+            msg = msg_plain or msg_html or msg  # first whatever
             charset = msg.get_charsets('us-ascii')[0]
             body = msg.get_payload(None, True)
             body = unicode(body, charset, 'replace')
@@ -219,6 +227,7 @@ class Transport:
                 ## check for `msg.get_content_subtype() == 'html'` instead?
                 body = html2text(body)
 
+            # TODO?: optional extra haeders prepended to the body.
             m = Message(to=jto, frm=jfrom, subject=subject, body=body)
             self.jabber.send(m)
 
