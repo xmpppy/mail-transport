@@ -1,4 +1,5 @@
 #!/usr/bin/python
+# coding: utf8
 import os
 try:
     version = ('git ' + open(
@@ -97,6 +98,18 @@ class Transport:
         fromjid = event.getFrom()
         fromstripped = fromjid.getStripped()
         to = event.getTo()
+        ## TODO? skip 'error' messages?
+        ##  (example: recipient not found, `<message from='…'
+        ##  to='…@pymailt.…' type='error' id='1'>…<error code='503'
+        ##  type='cancel'>…<service-unavailable
+        ##  xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/>…`)
+        if ev_type == 'error':
+            ## Log properly? Send to fallbackjid (if not the error about it)?
+            try:  # hax to plug it in
+                raise Exception("Error XMPP message", event, str(event))
+            except Exception as e:
+                logError()
+            return
         try:
             if event.getSubject.strip() == '':
                 event.setSubject(None)
@@ -166,13 +179,19 @@ class Transport:
                 print 'RECEIVING:\n' + msg.as_string()
 
             mfrom = email.Utils.parseaddr(msg['From'])[1]
-            mto = email.Utils.parseaddr(msg['To'])[1]
+            ## XXXX: re-check this
+            mto_base = msg['Envelope-To'] or msg['To']
+            mto = email.Utils.parseaddr(mto_base)[1]
 
+            ## XXXX/TODO: use `Message-id` or similar for resource (and
+            ##   parse it in incoming messages)? Might have to also send
+            ##   status updates for those.
             jfrom = '%s@%s' % (mfrom.replace('@', '%'), config.jid)
 
             tosplit = mto.split('@', 1)
             jto = None
             for mapping in self.mappings:
+                #break  ## XXXXXX: hax: send everything to one place.
                 if mapping[1] == tosplit[1]:
                     jto = '%s@%s' % (tosplit [0], mapping[0])
 
