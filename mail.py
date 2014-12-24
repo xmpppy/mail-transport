@@ -1,14 +1,30 @@
 #!/usr/bin/python
+# coding: utf8
+import os
 try:
-    version = 'git ' + open(os.path.join(os.path.dirname(__file__), '.git/refs/heads/master')).read().strip()
-except:
+    version = ('git ' + open(
+        os.path.join(os.path.dirname(__file__), '.git/refs/heads/master')
+      ).read().strip())
+except Exception:
     version = 'unknown'
 
-import email, os, signal, smtplib, sys, time, traceback, xmpp
+import email
+import signal
+import smtplib
+import sys
+import time
+import traceback
+import xmpp
 from xmpp.browser import *
 from email.MIMEText import MIMEText
 from email.Header import decode_header
-import config, xmlconfig
+try:
+    from html2text import html2text
+except ImportError:
+    html2text = lambda s: s  # dummy replacement
+
+import config
+import xmlconfig
 
 class Transport:
 
@@ -16,72 +32,84 @@ class Transport:
     restart = 0
     offlinemsg = ''
 
-    def __init__(self,jabber):
+    def __init__(self, jabber):
         self.jabber = jabber
-        self.watchdir = config.watchDir
-        if '~' in self.watchdir:
-            self.watchdir = self.watchdir.replace('~', os.environ['HOME'])
+        self.watchdir = os.path.expanduser(config.watchDir)
         # A list of two element lists, 1st is xmpp domain, 2nd is email domain
         self.mappings = [mapping.split('=') for mapping in config.domains]
-        email.Charset.add_charset( 'utf-8', email.Charset.SHORTEST, None, None )
+        self.jto_fallback = config.fallbackToJid
+        email.Charset.add_charset('utf-8', email.Charset.SHORTEST, None, None)
 
     def register_handlers(self):
-        self.jabber.RegisterHandler('message',self.xmpp_message)
-        self.jabber.RegisterHandler('presence',self.xmpp_presence)
+        self.jabber.RegisterHandler('message', self.xmpp_message)
+        self.jabber.RegisterHandler('presence', self.xmpp_presence)
         self.disco = Browser()
         self.disco.PlugIn(self.jabber)
-        self.disco.setDiscoHandler(self.xmpp_base_disco,node='',jid=config.jid)
+        self.disco.setDiscoHandler(self.xmpp_base_disco, node='',
+          jid=config.jid)
 
     # Disco Handlers
-    def xmpp_base_disco(self, con, event, type):
+    def xmpp_base_disco(self, con, event, ev_type):
         fromjid = event.getFrom().__str__()
         to = event.getTo()
-        node = event.getQuerynode();
+        node = event.getQuerynode()
         #Type is either 'info' or 'items'
         if to == config.jid:
             if node == None:
-                if type == 'info':
-                    return {
-                        'ids':[
-                            {'category':'gateway','type':'smtp','name':config.discoName}],
-                        'features':[NS_VERSION,NS_COMMANDS]}
-                if type == 'items':
+                if ev_type == 'info':
+                    return dict(
+                        ids=[dict(category='gateway', type='smtp',
+                          name=config.discoName)],
+                        features=[NS_VERSION, NS_COMMANDS])
+                if ev_type == 'items':
                     return []
             else:
-                self.jabber.send(Error(event,ERR_ITEM_NOT_FOUND))
+                self.jabber.send(Error(event, ERR_ITEM_NOT_FOUND))
                 raise NodeProcessed
         else:
-            self.jabber.send(Error(event,MALFORMED_JID))
+            self.jabber.send(Error(event, MALFORMED_JID))
             raise NodeProcessed
 
     #XMPP Handlers
     def xmpp_presence(self, con, event):
         # Add ACL support
         fromjid = event.getFrom()
-        type = event.getType()
+        ev_type = event.getType()
         to = event.getTo()
-        if type == 'subscribe':
+        if ev_type == 'subscribe':
             self.jabber.send(Presence(to=fromjid, frm = to, typ = 'subscribe'))
-        elif type == 'subscribed':
+        elif ev_type == 'subscribed':
             self.jabber.send(Presence(to=fromjid, frm = to, typ = 'subscribed'))
-        elif type == 'unsubscribe':
+        elif ev_type == 'unsubscribe':
             self.jabber.send(Presence(to=fromjid, frm = to, typ = 'unsubscribe'))
-        elif type == 'unsubscribed':
+        elif ev_type == 'unsubscribed':
             self.jabber.send(Presence(to=fromjid, frm = to, typ = 'unsubscribed'))
-        elif type == 'probe':
+        elif ev_type == 'probe':
             self.jabber.send(Presence(to=fromjid, frm = to))
-        elif type == 'unavailable':
+        elif ev_type == 'unavailable':
             self.jabber.send(Presence(to=fromjid, frm = to, typ = 'unavailable'))
-        elif type == 'error':
+        elif ev_type == 'error':
             return
         else:
             self.jabber.send(Presence(to=fromjid, frm = to))
 
     def xmpp_message(self, con, event):
-        type = event.getType()
+        ev_type = event.getType()
         fromjid = event.getFrom()
         fromstripped = fromjid.getStripped()
         to = event.getTo()
+        ## TODO? skip 'error' messages?
+        ##  (example: recipient not found, `<message from='…'
+        ##  to='…@pymailt.…' type='error' id='1'>…<error code='503'
+        ##  type='cancel'>…<service-unavailable
+        ##  xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/>…`)
+        if ev_type == 'error':
+            ## Log properly? Send to fallbackjid (if not the error about it)?
+            try:  # hax to plug it in
+                raise Exception("Error XMPP message", event, str(event))
+            except Exception as e:
+                logError()
+            return
         try:
             if event.getSubject.strip() == '':
                 event.setSubject(None)
@@ -89,45 +117,50 @@ class Transport:
             pass
         if event.getBody() == None:
             return
-        if to.getNode() != '':
 
-            mto = to.getNode().replace('%', '@')
+        if to.getNode() == '':
+            self.jabber.send(Error(event, ERR_ITEM_NOT_FOUND))
+            return
+        mto = to.getNode().replace('%', '@')
 
-            fromsplit = fromstripped.split('@', 1)
-            mfrom = None
-            for mapping in self.mappings:
-                if mapping[0] == fromsplit[1]:
-                    mfrom = '%s@%s' % (fromsplit[0], mapping[1])
+        fromsplit = fromstripped.split('@', 1)
+        mfrom = None
+        for mapping in self.mappings:
+            if mapping[0] == fromsplit[1]:
+                mfrom = '%s@%s' % (fromsplit[0], mapping[1])
 
-            if mfrom:
-                subject = event.getSubject()
-                body = event.getBody()
+        if not mfrom:
+            self.jabber.send(Error(event, ERR_REGISTRATION_REQUIRED))
+            return
 
-                charset = 'utf-8'
-                body = body.encode(charset, 'replace')
+        subject = event.getSubject()
+        body = event.getBody()
+        ## TODO: Make it possible to ender subject as a part of message
+        ##   (e.g.  `Sobject: ...` in the first line)
+        ## TODO?: e-mail conversation tracking (reply-to)
 
-                msg = MIMEText(body, 'plain', charset)
-                if subject: msg['Subject'] = subject
-                msg['From'] = mfrom
-                msg['To'] = mto
+        charset = 'utf-8'
+        body = body.encode(charset, 'replace')
 
-                try:
-                    if config.dumpProtocol: print 'SENDING:\n' + msg.as_string()
-                    mailserver = smtplib.SMTP(config.smtpServer)
-                    if config.dumpProtocol: mailserver.set_debuglevel(1)
-                    mailserver.sendmail(mfrom, mto, msg.as_string())
-                    mailserver.quit()
-                except:
-                    logError()
-                    self.jabber.send(Error(event,ERR_RECIPIENT_UNAVAILABLE))
+        msg = MIMEText(body, 'plain', charset)
+        if subject:
+            msg['Subject'] = subject
+        msg['From'] = mfrom
+        msg['To'] = mto
 
-            else:
-                self.jabber.send(Error(event,ERR_REGISTRATION_REQUIRED))
-        else:
-            self.jabber.send(Error(event,ERR_ITEM_NOT_FOUND))
+        try:
+            if config.dumpProtocol:
+                print 'SENDING:\n', msg.as_string()
+            mailserver = smtplib.SMTP(config.smtpServer)
+            if config.dumpProtocol:
+                mailserver.set_debuglevel(1)
+            mailserver.sendmail(mfrom, mto, msg.as_string())
+            mailserver.quit()
+        except:
+            logError()
+            self.jabber.send(Error(event, ERR_RECIPIENT_UNAVAILABLE))
 
     def mail_check(self):
-
         if time.time() < self.lastcheck + 5:
             return
 
@@ -142,20 +175,33 @@ class Transport:
             fp.close()
             os.remove(fullname)
 
-            if config.dumpProtocol: print 'RECEIVING:\n' + msg.as_string()
+            if config.dumpProtocol:
+                print 'RECEIVING:\n' + msg.as_string()
 
             mfrom = email.Utils.parseaddr(msg['From'])[1]
-            mto = email.Utils.parseaddr(msg['To'])[1]
+            ## XXXX: re-check this
+            mto_base = msg['Envelope-To'] or msg['To']
+            mto = email.Utils.parseaddr(mto_base)[1]
 
+            ## XXXX/TODO: use `Message-id` or similar for resource (and
+            ##   parse it in incoming messages)? Might have to also send
+            ##   status updates for those.
             jfrom = '%s@%s' % (mfrom.replace('@', '%'), config.jid)
 
             tosplit = mto.split('@', 1)
             jto = None
             for mapping in self.mappings:
+                #break  ## XXXXXX: hax: send everything to one place.
                 if mapping[1] == tosplit[1]:
                     jto = '%s@%s' % (tosplit [0], mapping[0])
 
-            if not jto: continue
+            if not jto:
+                ## XXX: actual problem is in, e.g., maillists mail, which is
+                ##   sent to the maillist and not to the recipient. This is
+                ##   more like a temporary haxfix for that.
+                jto = self.jto_fallback
+                if not jto:
+                    continue
 
             (subject, charset) = decode_header(msg['Subject'])[0]
             if charset: subject = unicode(subject, charset, 'replace')
@@ -163,26 +209,34 @@ class Transport:
             # we are assuming that text/plain will be first
             while msg.is_multipart():
                 msg = msg.get_payload(0)
-                if not msg: continue
+                if not msg:
+                    continue
 
             charset = msg.get_charsets('us-ascii')[0]
-            body = msg.get_payload(None,True)
+            body = msg.get_payload(None, True)
             body = unicode(body, charset, 'replace')
+            if msg.get_content_type() == 'text/html':
+                ## check for `msg.get_content_subtype() == 'html'` instead?
+                body = html2text(body)
 
-            m = Message(to=jto,frm = jfrom, subject = subject, body = body)
+            m = Message(to=jto, frm=jfrom, subject=subject, body=body)
             self.jabber.send(m)
 
     def xmpp_connect(self):
-        connected = self.jabber.connect((config.mainServer,config.port))
-        if config.dumpProtocol: print "connected:",connected
+        connected = self.jabber.connect((config.mainServer, config.port))
+        if config.dumpProtocol:
+            print "connected:", connected
         while not connected:
             time.sleep(5)
-            connected = self.jabber.connect((config.mainServer,config.port))
-            if config.dumpProtocol: print "connected:",connected
+            connected = self.jabber.connect((config.mainServer, config.port))
+            if config.dumpProtocol:
+                print "connected:", connected
         self.register_handlers()
-        if config.dumpProtocol: print "trying auth"
-        connected = self.jabber.auth(config.saslUsername,config.secret)
-        if config.dumpProtocol: print "auth return:",connected
+        if config.dumpProtocol:
+            print "trying auth"
+        connected = self.jabber.auth(config.saslUsername, config.secret)
+        if config.dumpProtocol:
+            print "auth return:", connected
         return connected
 
     def xmpp_disconnect(self):
@@ -198,11 +252,15 @@ def loadConfig():
             xmlconfig.reloadConfig(configFile, configOptions)
             config.configFile = configFile
             return
-    print "Configuration file not found. You need to create a config file and put it in one of these locations:\n    " + "\n    ".join(config.configFiles)
+    print ("Configuration file not found. "
+      "You need to create a config file and put it "
+      " in one of these locations:\n "
+      + "\n ".join(config.configFiles))
     sys.exit(1)
 
+
 def logError():
-    err = '%s - %s\n'%(time.strftime('%a %d %b %Y %H:%M:%S'),version)
+    err = '%s - %s\n' % (time.strftime('%a %d %b %Y %H:%M:%S'), version)
     if logfile != None:
         logfile.write(err)
         traceback.print_exc(file=logfile)
@@ -211,10 +269,13 @@ def logError():
     traceback.print_exc()
     sys.exc_clear()
 
+
 def sigHandler(signum, frame):
-    transport.offlinemsg = 'Signal handler called with signal %s'%signum
-    if config.dumpProtocol: print 'Signal handler called with signal %s'%signum
+    transport.offlinemsg = 'Signal handler called with signal %s' % (signum,)
+    if config.dumpProtocol:
+        print 'Signal handler called with signal %s' % (signum,)
     transport.online = 0
+
 
 if __name__ == '__main__':
     if 'PID' in os.environ:
@@ -236,10 +297,11 @@ if __name__ == '__main__':
         logfile = open(config.debugFile,'a')
 
     if config.dumpProtocol:
-        debug=['always', 'nodebuilder']
+        debug = ['always', 'nodebuilder']
     else:
-        debug=[]
-    connection = xmpp.client.Component(config.jid,config.port,debug=debug,sasl=sasl,bind=config.useComponentBinding,route=config.useRouteWrap)
+        debug = []
+    connection = xmpp.client.Component(config.jid, config.port, debug=debug,
+      sasl=sasl, bind=config.useComponentBinding, route=config.useRouteWrap)
     transport = Transport(connection)
     if not transport.xmpp_connect():
         print "Could not connect to server, or password mismatch!"
@@ -259,14 +321,17 @@ if __name__ == '__main__':
             transport.xmpp_disconnect()
         except:
             logError()
-        if not connection.isConnected():  transport.xmpp_disconnect()
+        if not connection.isConnected():
+            transport.xmpp_disconnect()
     connection.disconnect()
     if config.pid:
         os.unlink(config.pid)
     if logfile:
         logfile.close()
     if transport.restart:
-        args=[sys.executable]+sys.argv
-        if os.name == 'nt': args = ["\"%s\"" % a for a in args]
-        if config.dumpProtocol: print sys.executable, args
+        args = [sys.executable] + sys.argv
+        if os.name == 'nt':
+            args = ["\"%s\"" % (a,) for a in args]
+        if config.dumpProtocol:
+            print sys.executable, args
         os.execv(sys.executable, args)

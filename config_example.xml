@@ -57,4 +57,7 @@
         <map>jabber.localhost=jabber.mail.localhost</map>
     </domains>
 
+    <!-- JID to use when actual recipient is not found (for personal use /
+      maillist problem fix -->
+    <!--<fallbackToJid>me@jabber.localhost</fallbackToJid>-->
 </pymailt>
