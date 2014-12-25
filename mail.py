@@ -204,7 +204,8 @@ class Transport:
                     continue
 
             (subject, charset) = decode_header(msg['Subject'])[0]
-            if charset: subject = unicode(subject, charset, 'replace')
+            if charset:
+                subject = unicode(subject, charset, 'replace')
 
             msg_plain = msg_html = None
             while msg.is_multipart():
@@ -219,15 +220,23 @@ class Transport:
                 elif 'text/plain' in ctype:
                     msg_plain = msg
 
-            msg = msg_plain or msg_html or msg  # first whatever
+            if config.preferredFormat == 'plaintext':
+                msg = msg_plain or msg_html or msg  # first whatever
+            else:  # html2text or html
+                msg = msg_html or msg_plain or msg
+
             charset = msg.get_charsets('us-ascii')[0]
             body = msg.get_payload(None, True)
             body = unicode(body, charset, 'replace')
-            if msg.get_content_type() == 'text/html':
-                ## check for `msg.get_content_subtype() == 'html'` instead?
-                body = html2text(body)
+            # check for `msg.get_content_subtype() == 'html'` instead?
+            if 'text/html' in msg.get_content_type():
+                if config.preferredFormat != 'html':
+                    body = html2text(body)
+                # TODO: else compose an XMPP-HTML message? Will require a
+                # complicated preprocessor like bs4 though
 
-            # TODO?: optional extra haeders prepended to the body.
+            # TODO?: optional extra headers (e.g. To if To != Envelope-To)
+            # prepended to the body.
             m = Message(to=jto, frm=jfrom, subject=subject, body=body)
             self.jabber.send(m)
 

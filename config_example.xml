@@ -57,6 +57,9 @@
         <map>jabber.localhost=jabber.mail.localhost</map>
     </domains>
 
+    <!-- Preferred format: plaintext or html2text or html -->
+    <preferredFormat>plaintext</preferredFormat>
+
     <!-- JID to use when actual recipient is not found (for personal use /
       maillist problem fix -->
     <!--<fallbackToJid>me@jabber.localhost</fallbackToJid>-->

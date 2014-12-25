@@ -27,3 +27,6 @@ watchDir = "~/Maildir/new/"
 
 domains = []
 fallbackToJid = ''
+
+# 'plaintext' or 'html2text' or 'html'
+preferredFormat = 'plaintext'
