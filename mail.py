@@ -15,16 +15,36 @@ import sys
 import time
 import traceback
 import xmpp
+import logging
 from xmpp.browser import *
 from email.MIMEText import MIMEText
 from email.Header import decode_header
-try:
-    from html2text import html2text
-except ImportError:
-    html2text = lambda s: s  # dummy replacement
 
 import config
 import xmlconfig
+
+
+_log = logging.getLogger(__name__)
+
+
+def get_html2text(config):
+    try:
+        import html2text as htmod
+    except Exception, exc:
+        _log.warning("html2text import failure: %r", exc)
+        return lambda s: s  # dummy replacement
+
+    ## TODO: use a newer version of html2text and the values from config.
+    htmod.LINKS_EACH_PARAGRAPH = 1
+    htmod.SKIP_INTERNAL_LINKS = 1
+    # htmod.UNICODE_SNOB = 0  # default
+    return htmod.html2text
+
+
+def config_logging(config):
+    ## TODO: use some actual config stuff
+    logging.basicConfig(level=1)
+
 
 class Transport:
 
@@ -150,7 +170,7 @@ class Transport:
 
         try:
             if config.dumpProtocol:
-                print 'SENDING:\n', msg.as_string()
+                _log.info('SENDING: %r', msg.as_string())
             mailserver = smtplib.SMTP(config.smtpServer)
             if config.dumpProtocol:
                 mailserver.set_debuglevel(1)
@@ -176,7 +196,7 @@ class Transport:
             os.remove(fullname)
 
             if config.dumpProtocol:
-                print 'RECEIVING:\n' + msg.as_string()
+                _log.info('RECEIVING: %r', msg.as_string())
 
             mfrom = email.Utils.parseaddr(msg['From'])[1]
             ## XXXX: re-check this
@@ -207,30 +227,43 @@ class Transport:
             if charset:
                 subject = unicode(subject, charset, 'replace')
 
+            log = _log.debug
+
+            log("processing email message %s", repr(msg)[:60])
             msg_plain = msg_html = None
-            while msg.is_multipart():
-                msg = msg.get_payload(0)
-                if not msg:
+            submessages = msg.get_payload()
+            for submessage in submessages:
+                # msg = msg.get_payload(0)
+                if not submessage:
                     continue
-                ctype = msg.get_content_type()
+                ctype = submessage.get_content_type()
                 # NOTE: 'startswith' might be nore correct, but this should
                 # be okay too
                 if 'text/html' in ctype:
-                    msg_html = msg
+                    log("msg: found text/html")
+                    msg_html = submessage
                 elif 'text/plain' in ctype:
-                    msg_plain = msg
+                    log("msg: found text/plain")
+                    msg_plain = submessage
+                else:
+                    log("msg: unprocessed ctype %r" % (ctype,))
 
             if config.preferredFormat == 'plaintext':
+                log("msg: preferring plaintext")
                 msg = msg_plain or msg_html or msg  # first whatever
             else:  # html2text or html
+                log("msg: preferring html")
                 msg = msg_html or msg_plain or msg
+                log("msg: resulting content_type is %r" % (msg.get_content_type(),))
 
-            charset = msg.get_charsets('us-ascii')[0]
+            charset = msg.get_charsets('utf-8')[0]
             body = msg.get_payload(None, True)
             body = unicode(body, charset, 'replace')
             # check for `msg.get_content_subtype() == 'html'` instead?
             if 'text/html' in msg.get_content_type():
                 if config.preferredFormat != 'html':
+                    log("msg: doing html2text")
+                    html2text = get_html2text(config)
                     body = html2text(body)
                 # TODO: else compose an XMPP-HTML message? Will require a
                 # complicated preprocessor like bs4 though
@@ -243,18 +276,18 @@ class Transport:
     def xmpp_connect(self):
         connected = self.jabber.connect((config.mainServer, config.port))
         if config.dumpProtocol:
-            print "connected:", connected
+            _log.info("connected: %r", connected)
         while not connected:
             time.sleep(5)
             connected = self.jabber.connect((config.mainServer, config.port))
             if config.dumpProtocol:
-                print "connected:", connected
+                _log.info("connected: %r", connected)
         self.register_handlers()
         if config.dumpProtocol:
-            print "trying auth"
+            _log.info("trying auth")
         connected = self.jabber.auth(config.saslUsername, config.secret)
         if config.dumpProtocol:
-            print "auth return:", connected
+            _log.info("auth return: %r", connected)
         return connected
 
     def xmpp_disconnect(self):
@@ -263,6 +296,7 @@ class Transport:
             time.sleep(5)
             self.xmpp_connect()
 
+
 def loadConfig():
     configOptions = {}
     for configFile in config.configFiles:
@@ -270,9 +304,9 @@ def loadConfig():
             xmlconfig.reloadConfig(configFile, configOptions)
             config.configFile = configFile
             return
-    print ("Configuration file not found. "
+    sys.stderr.write(("Configuration file not found. "
       "You need to create a config file and put it "
-      " in one of these locations:\n "
+      " in one of these locations:\n ")
       + "\n ".join(config.configFiles))
     sys.exit(1)
 
@@ -304,15 +338,16 @@ if __name__ == '__main__':
         pidfile.write(`os.getpid()`)
         pidfile.close()
 
+    config_logging(config)
+    logfile = None
+    if config.debugFile:
+        logfile = open(config.debugFile, 'a')
+
     if config.saslUsername:
         sasl = 1
     else:
         config.saslUsername = config.jid
         sasl = 0
-
-    logfile = None
-    if config.debugFile:
-        logfile = open(config.debugFile,'a')
 
     if config.dumpProtocol:
         debug = ['always', 'nodebuilder']
